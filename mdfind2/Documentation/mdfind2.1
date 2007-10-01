@@ -1,0 +1,57 @@
+.Dd June 3, 2007
+.Dt mdfind2 1
+.Os Mac\ OS X
+.Sh NAME
+.Nm mdfind2
+.Nd finds files matching a given query 
+.Sh SYNOPSIS
+.Nm
+.Op Fl live
+.Op Fl onlyin Ar directory
+.Ar query
+.Sh DESCRIPTION
+The
+.Nm
+command consults the central metadata store and returns a list of files that match the given metadata query. The query can be a string or a query expression.
+.Pp
+The following options are available:
+.Bl -tag -width -d\ seconds
+.It Fl 0
+Prints an
+.Tn ASCII NUL
+character after each result path.
+This is useful when used in conjunction with xargs -0.
+.It Fl live
+Causes the mdfind command to provide live-updates to the number of files matching the query.
+When an update causes the query results to change the number of matches is updated.
+The find can be cancelled by typing ctrl-C.
+.It Fl onlyin Ar dir
+Limit the scope of the search to the directory specified.
+.El
+.Pp
+.Sh EXAMPLES
+.Pp
+The following examples are shown as given to the shell.
+.Pp
+This returns all files with any metadata attribute value matching the string "image":
+.Bd -literal -offset indent
+mdfind image 
+.Ed
+.Pp
+This returns all files that contain "MyFavoriteAuthor" in the kMDItemAuthor metadata attribute:
+.Bd -literal -offset indent
+mdfind "kMDItemAuthor == '*MyFavoriteAuthor*'"
+.Ed
+.Pp
+This returns all files with any metadata attribute value matching the string "skateboard".
+The find continues to run after gathering the initial results, providing a count of the number of files that match the query.
+.Bd -literal -offset indent
+mdfind -live skateboard 
+.Ed
+.Sh SEE ALSO 
+.Xr mdfind 1 ,
+.Xr mdcheckschema 1 ,
+.Xr mdimport 1 ,
+.Xr mdls 1 ,
+.Xr mdutil 1 ,
+.Xr xargs 1 
