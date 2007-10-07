@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+# dirscan.py, version 1.1
+
 import os
 import re
 import sys
@@ -444,9 +446,8 @@ class DirScanner(object):
         self._dbMtime = datetime.fromtimestamp(os.stat(self.database)[ST_MTIME])
 
     def saveState(self):
-        if not self._dirty: return
-        if not self._entries: return
         if not self.database: return
+        if not self._dirty: return
         if self.dryrun: return
 
         databaseDir = dirname(self.database)
@@ -514,7 +515,7 @@ class DirScanner(object):
                     self._dirty = True
 
             # Delete this path from the `shadow' dictionary, since we've now
-            # dealt with it. Any entries that remain in `shadow' at the end
+            # dealt with it.  Any entries that remain in `shadow' at the end
             # will trigger an onEntryRemoved event.
 
             assert self._shadow.has_key(entry.path)
@@ -563,9 +564,8 @@ class DirScanner(object):
             if self._entries.has_key(entry.path):
                 assert isinstance(self._entries[entry.path], Entry)
                 assert self._entries[entry.path] is entry
-
                 del self._entries[entry.path]
-                self._dirty = True
+            self._dirty = True
 
     def _walkEntries(self, path, depth = 0):
         "This is the worker task for scanEntries, called for each directory."
@@ -744,9 +744,9 @@ class DirScanner(object):
                 if self._entries.has_key(entry.path):
                     l.debug("Removing missing entry at '%s'" % entry)
                     del self._entries[entry.path]
-                    self._dirty = True
                 else:
                     l.warning("Missing entry '%s' not in entries list" % entry)
+                self._dirty = True
 
         # Report what the oldest file seen was, if debugging
 
@@ -982,3 +982,5 @@ if __name__ == '__main__':
 
     scanner = DirScanner(**userOptions)
     scanner.scanEntries()
+
+# dirscan.py ends here
