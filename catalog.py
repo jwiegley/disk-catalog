@@ -771,14 +771,12 @@ def processEntriesResult(c, reporter):
 
 def findEntriesByName(name, reporter):
     containsPercent = re.search('%', name)
-    print "step 1"
     c = pg_conn.cursor()
     c.execute("""
       SELECT v."id", v."name", v."location", v."kind", e."id"
       FROM "volumes" as v, "entries" as e
       WHERE e."name" %s %%s AND e."volumeId" = v."id" """ %
                  (containsPercent and "LIKE" or "="), (name,))
-    print "step 2"
     return processEntriesResult(c, reporter)
 
 def findEntriesByPath(path, reporter):
