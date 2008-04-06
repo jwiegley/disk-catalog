@@ -133,6 +133,12 @@ class Entry(object):
         self._info = None
         return datetime.fromtimestamp(self.info[ST_MTIME])
 
+    @property
+    def fileSize(self):
+        # Clear the cached info, since it may have changed
+        self._info = None
+        return self.info[ST_SIZE]
+
     def contentsHaveChanged(self):
         if not self._prevInfo:
             return False
@@ -161,6 +167,9 @@ class Entry(object):
         if not self._prevStamp:
             return False
         return self.timestamp != self._prevStamp
+
+    def isRegularFile(self):
+        return S_ISREG(self.info[ST_MODE])
 
     def isDirectory(self):
         return S_ISDIR(self.info[ST_MODE])
@@ -567,7 +576,21 @@ class DirScanner(object):
                 del self._entries[entry.path]
             self._dirty = True
 
-    def _walkEntries(self, path, depth = 0):
+    def walkEntries(self, fun):
+        if callable(fun):
+            for entry in self._entries.values():
+                assert isinstance(entry, Entry)
+                fun(entry)
+
+    def totalSize(self):
+        size = 0
+        for entry in self._entries.values():
+            assert isinstance(entry, Entry)
+            if entry.isRegularFile():
+                size += entry.fileSize()
+        return size
+
+    def _scanEntries(self, path, depth = 0):
         "This is the worker task for scanEntries, called for each directory."
 
         l.debug("Scanning %s ..." % path)
@@ -599,7 +622,7 @@ class DirScanner(object):
             if entry.isDirectory() and \
                (self.depth < 0 or depth < self.depth) and \
                entry.shouldEnterDirectory():
-                self._walkEntries(entryPath, depth + 1)
+                self._scanEntries(entryPath, depth + 1)
 
             self._scanEntry(entry)
 
@@ -733,7 +756,7 @@ class DirScanner(object):
                 assert isinstance(entry, Entry)
                 self._scanEntry(entry)
         else:
-            self._walkEntries(self.directory)
+            self._scanEntries(self.directory)
 
         # Anything remaining in the `shadow' dictionary are state entries which
         # no longer exist on disk, so we trigger `onEntryRemoved' for each of

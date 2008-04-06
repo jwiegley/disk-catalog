@@ -1,13 +1,15 @@
 #!/usr/bin/env python2.5
 #
-# catalog.py, version 10
+# catalog.py, version 11
 # by John Wiegley <johnw@newartisans.com>
 #
-# Depends on: PostgreSQL 8, Python 2.5
+# Depends on: PostgreSQL (>= 8.2.5), Python (>= 2.5.1)
 #   Optional: p7zip, rar
 
 # TODO
 #
+# - add support for storing MD5 checksums
+# - add support for comparing a directory to a recorded volume 
 # - Write "ext" basic query
 # - Exclude trashes, device files (/dev, /proc), and mount locations
 #
@@ -154,7 +156,8 @@
 #   "entryId"      INT       The id of the entry it describes
 #   "linkGroupId"  INT       Id of the "link group" this entry belongs to
 #   "size"         BIGINT    The size of the file
-#   "encoding"     TEXT      The enconding of its contents (if applicable)
+#   "checksum"     CHAR(32)  An MD5 checksum of the contents (if possible)
+#   "encoding"     TEXT      The encoding of its contents (if applicable)
 #
 # The "dirAttrs" table records information about directories and archive
 # contents:
@@ -232,6 +235,7 @@ pg_conn = None
 import mx.DateTime
 import zipfile
 import tarfile
+import md5
 
 alwaysRescan = True
 try:
@@ -287,12 +291,10 @@ def createTables():
          "attrsModified" TIMESTAMP,
          "dataAccessed" TIMESTAMP,
          "volumePath" TEXT)""")
-    #c.execute("CREATE SEQUENCE \"entries_id_seq\"")
 
     c.execute("""
     CREATE TABLE "linkGroups"
         ("id" SERIAL PRIMARY KEY)""")
-    #c.execute("CREATE SEQUENCE \"linkGroups_id_seq\"")
 
     c.execute("""
     CREATE TABLE "fileAttrs"
@@ -302,8 +304,8 @@ def createTables():
          "linkGroupId" INTEGER,
          FOREIGN KEY ("linkGroupId") REFERENCES "linkGroups"("id") ON DELETE SET NULL,
          "size" BIGINT NOT NULL,
+         "checksum" char(32) NOT NULL,
          "encoding" TEXT)""")
-    #c.execute("CREATE SEQUENCE \"fileAttrs_id_seq\"")
 
     c.execute("""
     CREATE TABLE "dirAttrs"
@@ -314,7 +316,6 @@ def createTables():
          "thisSize" BIGINT NOT NULL,
          "totalCount" INTEGER NOT NULL,
          "totalSize" BIGINT NOT NULL)""")
-    #c.execute("CREATE SEQUENCE \"dirAttrs_id_seq\"")
 
     c.execute("""
     CREATE TABLE "linkAttrs"
@@ -323,7 +324,6 @@ def createTables():
          FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
          "targetId" INTEGER NOT NULL,
          FOREIGN KEY ("targetId") REFERENCES "entries"("id") ON DELETE RESTRICT)""")
-    #c.execute("CREATE SEQUENCE \"linkAttrs_id_seq\"")
 
     c.execute("""
     CREATE TABLE "metadata"
@@ -338,22 +338,17 @@ def createTables():
          "intValue" INTEGER,
          "dateValue" TIMESTAMP,
          "blobValue" BYTEA)""")
-    #c.execute("CREATE SEQUENCE \"metadata_id_seq\"")
 
     pg_conn.commit()
 
 def initDatabase():
     version = 0
     try:
-        #c.execute("USE \"catalog\"")
         c = pg_conn.cursor()
         c.execute("SELECT \"version\" FROM \"version\"")
         row = c.fetchone()
         version = row[0]
     except:
-        #c.execute("CREATE DATABASE \"catalog\" WITH ENCODING \"UTF8\"")
-        #c.execute("USE \"catalog\"")
-        #c.execute("DROP TABLE IF EXISTS \"version\"")
         c = pg_conn.cursor()
         c.execute("CREATE TABLE \"version\"(\"version\" INTEGER NOT NULL)")
         c.execute("INSERT INTO \"version\" (\"version\") VALUES (0)")
@@ -362,13 +357,20 @@ def initDatabase():
     if version < 1:
         createTables()
 
+    if version < 10:
         # Add indices for the tables
-        #c.execute("ALTER TABLE \"volumes\" ADD UNIQUE(\"name\"(255))")
-        #c.execute("ALTER TABLE \"entries\" ADD INDEX(\"extension\"(10))")
-        #c.execute("ALTER TABLE \"entries\" ADD INDEX(\"kind\"(32))")
+        #c.execute("CREATE INDEX \"entries_volumeId_idx\" ON \"entries\"(\"volumeId\")")
+        c.execute("CREATE INDEX \"entries_directoryId_idx\" ON \"entries\"(\"directoryId\")")
+        c.execute("CREATE INDEX \"fileAttrs_entryId_idx\" ON \"fileAttrs\"(\"entryId\")")
+        c.execute("CREATE INDEX \"fileAttrs_linkGroupId_idx\" ON \"fileAttrs\"(\"linkGroupId\")")
+        c.execute("CREATE INDEX \"dirAttrs_entryId_idx\" ON \"dirAttrs\"(\"entryId\")")
+        c.execute("CREATE INDEX \"linkAttrs_entryId_idx\" ON \"linkAttrs\"(\"entryId\")")
+        c.execute("CREATE INDEX \"linkAttrs_targetId_idx\" ON \"linkAttrs\"(\"targetId\")")
+        c.execute("CREATE INDEX \"metadata_entryId_idx\" ON \"metadata\"(\"entryId\")")
+        c.execute("CREATE INDEX \"metadata_metadataId_idx\" ON \"metadata\"(\"metadataId\")")
 
-    if version < 1:
-        version = 1
+    if version < 10:
+        version = 10
         c = pg_conn.cursor()
         c.execute("UPDATE \"version\" SET \"version\" = %d" % version)
         pg_conn.commit()
@@ -379,7 +381,9 @@ class FileAttrs:
     entry     = None
     linkGroup = None
     size      = None
+    checksum  = None
     encoding  = None
+    def __init__(self): pass
 
 class DirAttrs:
     entry      = None
@@ -387,15 +391,18 @@ class DirAttrs:
     thisSize   = 0
     totalCount = 0
     totalSize  = 0
+    def __init__(self): pass
 
 class ArchiveAttrs(FileAttrs):
     dirAttrs = None
     def __init__(self):
+        FileAttrs.__init__(self)
         self.dirAttrs = DirAttrs()
 
 class LinkAttrs:
     entry  = None
     target = None
+    def __init__(self): pass
 
 (DIRECTORY, PLAIN_FILE, SYMBOLIC_LINK,
  PACKAGE, PACKAGE_DIRECTORY, PACKAGE_FILE,
@@ -403,7 +410,6 @@ class LinkAttrs:
  SPECIAL_FILE) = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
 
 def isArchiveName(fileName):
-    #return re.search("\\.(Z|taz|sit|hqx)", fileName)
     return re.search("(\\.(zip|jar|7z|tgz|tbz|rar|dmg)|\\.tar(\\.gz|\\.bz2)?)$",
                      fileName)
 
@@ -475,6 +481,34 @@ class Entry:
     def isSpecialFile(self):
         return self.kind == SPECIAL_FILE
 
+    def getInfo(self):
+        if self.infoRead:
+            return
+
+        if self.id < 0:
+            self.readInfo()
+            return
+
+        if self.isDirectory() or self.isPackage():
+            return
+        elif self.isArchive():
+            return
+        elif not self.isSpecialFile():
+            c = pg_conn.cursor()
+            c.execute("""
+              SELECT "linkGroupId", "size", "checksum", "encoding"
+                FROM "fileAttrs" WHERE "entryId" = %s""", (self.id,))
+            result = c.fetchone()
+            if result:
+                self.attrs = FileAttrs()
+                self.attrs.entry     = self
+                self.attrs.linkGroup = None
+                self.attrs.size      = result[1]
+                self.attrs.checksum  = result[2]
+                self.attrs.encoding  = result[3]
+        else:
+            return
+
     def readInfo(self):
         info = os.lstat(self.path)
 
@@ -494,7 +528,9 @@ class Entry:
             else:
                 self.kind = PLAIN_FILE
                 self.attrs = FileAttrs()
-            self.attrs.size = long(info[ST_SIZE])
+
+            self.attrs.size     = long(info[ST_SIZE])
+            self.attrs.checksum = self.readChecksum(self.path)
         else:
             self.kind = SPECIAL_FILE
 
@@ -507,8 +543,32 @@ class Entry:
 
         self.infoRead = True
 
+    def readChecksum(self, path):
+        fd = open(path)
+        csum = md5.new()
+        csum.update(fd.read())
+        fd.close()
+        return csum.hexdigest()
+
+    def getChecksum(self):
+        if not self.infoRead: self.getInfo()
+        # Some archive members do not have attributes
+        if not self.attrs:
+            return None
+        if self.isDirectory() or self.isPackage():
+            return None
+        elif self.isArchive():
+            return None
+        elif not self.isSpecialFile():
+            return self.attrs.checksum
+        else:
+            return None
+
     def getCount(self):
         assert self.infoRead
+        # Some archive members do not have attributes
+        if not self.attrs:
+            return None
         if self.isDirectory() or self.isPackage():
             return self.attrs.totalCount
         elif self.isArchive():
@@ -518,6 +578,9 @@ class Entry:
 
     def getSize(self):
         assert self.infoRead
+        # Some archive members do not have attributes
+        if not self.attrs:
+            return None
         if self.isDirectory() or self.isPackage():
             return self.attrs.totalSize
         elif self.isArchive():
@@ -549,7 +612,8 @@ class Entry:
             for entryName in os.listdir(self.path):
                 entryPath = join(self.path, entryName)
 
-                if re.match("/(dev|Network|automount)/", entryPath):
+                if re.match("/(dev|Network|automount)/", entryPath) or \
+                   re.search("/\\.Trashes$", entryPath):
                     continue
 
                 entry = createEntry(self.volume, self, entryPath,
@@ -673,9 +737,10 @@ class Entry:
             c = pg_conn.cursor()
             c.execute("""
               INSERT INTO "fileAttrs"
-                ("entryId", "linkGroupId", "size", "encoding")
-              VALUES (%s, %s, %s, %s)""",
-                (self.id, None, self.attrs.size, self.attrs.encoding))
+                ("entryId", "linkGroupId", "size", "checksum", "encoding")
+              VALUES (%s, %s, %s, %s, %s)""",
+                (self.id, None, self.attrs.size, self.attrs.checksum,
+                 self.attrs.encoding))
             pg_conn.commit()
         elif self.isSymbolicLink():
             # jww (2007-02-24): What if the target hasn't been stored yet?
@@ -696,7 +761,8 @@ class Entry:
               INSERT INTO "dirAttrs"
                 ("entryId", "thisCount", "thisSize", "totalCount", "totalSize")
               VALUES (%s, %s, %s, %s, %s)""",
-                (self.id, attrs.thisCount, attrs.thisSize, attrs.totalCount, attrs.totalSize))
+                (self.id, attrs.thisCount, attrs.thisSize, attrs.totalCount,
+                 attrs.totalSize))
             pg_conn.commit()
 
     def drop(self):
@@ -795,8 +861,8 @@ class ZipFileEntry(Entry):              # a .zip archive file
         entry.kind  = PLAIN_FILE
         entry.attrs = FileAttrs()
 
-        entry.attrs.size    = info.file_size
-        entry.dataModified  = apply(mx.DateTime.DateTime, info.date_time)
+        entry.attrs.size   = info.file_size
+        entry.dataModified = apply(mx.DateTime.DateTime, info.date_time)
 
         entry.infoRead = True
         self.infoRead = True
@@ -1060,8 +1126,7 @@ class DiskImageEntry(Entry):              # a .dmg file
 
         finally:
             p = Popen("hdiutil detach \"%s\"" % path, shell = True, stdout = PIPE)
-            sts = os.waitpid(p.pid, 0)
-            p.close()
+            os.waitpid(p.pid, 0)
 
 class Volume:
     id         = -1
@@ -1090,15 +1155,16 @@ class Volume:
         c.execute("""SELECT "id" FROM "entries" WHERE "volumeId" = %s""", (volumeId,))
         data = c.fetchone()
 
-        c = pg_conn.cursor()
+        idsToDelete = []
         while data:
-            entryId = data[0]
-
+            idsToDelete.append(data[0])
+            data = c.fetchone()
+        
+        c = pg_conn.cursor()
+        for entryId in idsToDelete:
             c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = %s", (entryId,))
             c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = %s", (entryId,))
             c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = %s", (entryId,))
-
-            data = c.fetchone()
 
         c.execute("DELETE FROM \"entries\" WHERE \"volumeId\" = %s", (volumeId,))
         c.execute("DELETE FROM \"volumes\" WHERE \"id\" = %s", (volumeId,))
@@ -1241,15 +1307,19 @@ if not pg_conn:
     sys.exit(1)
 
 try:
-    c = pg_conn.cursor()
-    c.execute("SET CLIENT_ENCODING TO 'UTF8'")
+    cursor = pg_conn.cursor()
+    cursor.execute("SET CLIENT_ENCODING TO 'UTF8'")
 
     initDatabase()
 
     command = sys.argv[1]
 
     def print_result(entry):
-        print entry.volume.name, "->", entry.volumePath
+        csum = entry.getChecksum()
+        if csum:
+            print entry.volume.name, "=> %s <%s>" % (entry.volumePath, csum)
+        else:
+            print entry.volume.name, "=>", entry.volumePath
         sys.stdout.flush()
 
     if command == "initdb":
