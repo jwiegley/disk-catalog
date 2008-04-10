@@ -1,103 +1,95 @@
 #!/usr/bin/env python2.5
 #
-# catalog.py, version 11
-# by John Wiegley <johnw@newartisans.com>
+# catalog.py, version 12
+#   by John Wiegley <johnw@newartisans.com>
 #
-# Depends on: PostgreSQL (>= 8.2.5), Python (>= 2.5.1)
+# Depends on: Python (>= 2.5.1)
 #   Optional: p7zip, rar
 
 # TODO
 #
 # - add support for storing MD5 checksums
 # - add support for comparing a directory to a recorded volume 
-# - Write "ext" basic query
+# - Write "ext" basic query (for searching based on file extensions)
 # - Exclude trashes, device files (/dev, /proc), and mount locations
-#
 
 # INSTALL
 #
-# To get this working on my MacBook Pro (10.4.9), using the MacPorts system
-# for installing free software, I had to install the following packages by
-# using "port install ...":
+# To get this working on my MacBook Pro using the MacPorts system for
+# installing free software, I had to install the following packages by using
+# "port install ...":
 #
-#   postgresql82 +python
-#   postgresql82-server
 #   python25
-#   py25-pgsql
 #   py25-bz2
 #   py25-hashlib
-#   py25-mx-base
 #   py25-zlib
 #   p7zip
 #
 # If you want to inspect .rar files, you'll need a copy of the "rar"
-# command-line utility.  I use the one that came with the application
+# command-line utility.  I use the one that comes with the application
 # SimplyRAR.  You'll have to link to the "rar" utility in the application
 # bundle to someplace along your PATH.
-#
 
-# QUICK START
+# QUICK USAGE GUIDE
 #
-# Create a database user that will own the catalog database, example:
+# First, index your volume(s).  You can run this kind of command over and over
+# again:
 #
-#   sudo -u postgres createuser --password --pwprompt --createdb \
-#        --createrole --echo catalog_admin
+#   catalog -f /tmp/catalog.db index /Users --name "Home directories" \
+#     --location "Local disk" --kind "Directory"
 #
-# Create the catalog database, example:
+# The --name option is required, but the --location and --kind parameters are
+# optional.  Although the --name will be reported back to you, their content
+# has no special meaning.
 #
-#   sudo -u postgres createdb --password --owner catalog_admin \
-#        --echo catalog
+# Once indexed, you can search for what you need:
 #
-# Initialize the tables.  The only has to be done once:
+#   catalog -f /tmp/catalog.db name 'foo*'
+#   catalog -f /tmp/catalog.db path '/foo'
 #
-#   catalog initdb
-#
-# Now index your first volume:
-#
-#   catalog index --path /home/ --name "Home volume" \
-#     --location "Local disk" --kind "Hard drive"
-#
+# Set the environment variable CATALOG_FILE if you get tired of passing the -f
+# option.
 
 # ABOUT
 #
 # This is a disk cataloguing program.  For those familiar with UNIX, it's
-# similar to "locate": the main difference being that it's intended to handle
-# very large numbers of files (millions), as well as allowing you to query
-# against unmounted filesets -- such as files on a CD or in a disk image.
+# similar to "locate": the main difference being that it allows you to query
+# unmounted filesets -- such as files on CD, in a disk image, or in a ZIP
+# archive or tarball.
 #
-# Some of its salient features are:
+# Some of its salient features:
 #
-# 1. It will descend into compressed and uncompressed archives.
+# 1. It descends into compressed and uncompressed archives:
 #    a. .zip and .jar
 #    b. .tar, .tar.gz, .tgz, .tar.bz2, .tbz
 #    d. .rar
 #    c. .7z
 #
-# 2. On OS/X, it will descend into disk images, provided that:
+# 2. On OS/X, it descends into disk images, provided that:
 #    a. They do not ask for agreement to a software license, and
-#    b. They are not encrypted (unless explicitly requested).
+#    b. They are not encrypted (unless explicitly requested)
 #
-# 3. Disk images within disk images are searched, and so on recursively, as
-#    long as #2 remains true.
+# 3. Disk images within disk images are also searched, and so on recursively,
+#    as long as #2 holds true.
 #
-# 4. Archives within disk images are searched, but not disk images within
+# 4. Archives within disk images are also searched, but not disk images within
 #    archives, or archives within archives.
 #
-# 5. All data is kept in simple relational tables, allowing you to form
-#    complex SQL queries to find exactly what you're looking for.  The
-#    database schema is described below.
+# 5. All data is kept in simple relational tables, allowing you to create
+#    complex SQL queries yourself to find exactly what you're looking for.
+#    The database schema is described below.
 #
 
-# SCHEMA
+# DATABASE SCHEMA
 #
 # It's all in the data, isn't it?  This program is mostly about seeding an SQL
 # database so you can later write queries to your heart's content.  But to do
 # that, you'll need to fully understand how the data is stored and related:
 # its schema.
 #
-# The first table is "volumes", which tracks all of the volumes you've
-# indexed.  Each volume has an "id", which is of particular interest.  The
-# other elements in this table are purely informative:
+# The first table is "volumes", which tracks all the volumes you've indexed.
+# Each volume has an "id", which is of particular interest.  The other
+# elements in this table are purely informative:
 #
 #   "name"        TEXT      The unique name you gave to the volume
 #   "location"    TEXT      Where it resides, physically or digitally
@@ -106,10 +98,10 @@
 #   "totalSize"   BIGINT    The total uncompressed size of those entries
 #
 # The next, and largest table in the database is "entries", which is almost
-# always what you'll be looking for, by joining the "entries" table with some
-# of the other tables.  Each entry has a "volumeId" referring back to the
-# volume it's stored in.  So, to query for all entries in your "My Book"
-# volume, you'd use this:
+# always what you'll be searching by joining the "entries" table with some of
+# the other tables.  Each entry has a "volumeId" referring back to the volume
+# it's stored in.  So, to query for all entries in your "My Book" volume,
+# you'd use this:
 #
 #   SELECT e."id", e."volumePath" FROM "entries" as e, "volumes" as v
 #    WHERE v."name" = "My Book" AND e."volumeId" = v."id"
@@ -134,7 +126,7 @@
 #   "dataAccessed"   TIMESTAMP  When its data was last accessed
 #   "volumePath"     TEXT       Its full path within the volume
 #
-# There are several kinds of entries, whose "kind" will match to one of the
+# There are several kinds of entries, whose "kind" matches one of the
 # following:
 #
 #   1    A directory
@@ -146,8 +138,8 @@
 #
 # Each kind of entry has one (or two) associated attribute records.
 # Directories have a directory record, files have a file record, and archives
-# have both (one referring to the archive itself, and a directory record
-# referring to the contents within it).
+# have both (a file record referring to the archive itself, and a directory
+# record referring to the contents within).
 #
 # The "fileAttrs" table records information about actual files (things you
 # could move around with the 'cp' command, let's say). It's columns are:
@@ -169,16 +161,17 @@
 #   "totalCount"   INT       The count of all "descended" entries
 #   "totalSize"    BIGINT    The total size of all "descendend" entries
 #
-# The "linkAttrs" table is just for symbolic links, and basically it just
-# records which entry the link points to:
+# The "linkAttrs" table is just for symbolic links, and basically it records
+# which entry the link points to:
 #
 #   "id"           INT       Id of the link attribute
 #   "entryId"      INT       Entry id for the symbolic link itself
 #   "targetId"     INT       Id of the entry it points to
 #
-# The "metadata" table is special, and allows typed metadata to be stored for
-# an entry. Both individual items, and even lists and trees of typed items,
-# may be stored in this table.  It's structure is:
+# The "metadata" table is special, and allows an unlimited amount of typed
+# metadata to be stored for an entry.  Both individual items, and even lists
+# and trees of typed items, may be stored using this table.  It's structure
+# is:
 #
 #   "id"           INT       Id of the metadata item
 #   "entryId"      INT       Id of the entry it relates to
@@ -200,166 +193,131 @@
 #   5  List
 #
 # In the case of a list, none of the data fields are used. Rather, it means
-# that there are other metadata entries, all with the same "entryId", whose
+# there are other metadata entries, all with the same "entryId", whose
 # "metadataId" refers back to the parent list. If members of the list are also
-# list items, the results can be a tree of arbitrary depth. However, every
+# list items, the results can be a tree of arbitrary depth.  However, every
 # member of the tree will have the same "entryId" set, and the same "name",
 # making it possible to query the entry tree based on the entry or name,
 # without regard to its structure.
 #
 # A WORD ON INDICES: Since most name-based searches are going to be partial
-# (LIKE) or regular expressions (RLIKE), and since the indices for this kind
-# of database can get HUGE, I haven't bothered to index the textual fields,
-# such as filenames. Yes, there will be times when you search for an exact
-# filename, and having an index would make this very fast, but it just doesn't
-# happen often enough to justify the many megabytes of space such an index
-# would require. But if you prefer to have indices, feel free to create them
-# after your database has been initialized (the first run of the
-# program). Just use the postgresql command-line tool and run a command like
-# this:
+# (LIKE) or regular expressions (RLIKE), and since the indices can get HUGE, I
+# haven't bothered to index the textual fields, such as filenames.  Yes, there
+# will be times when you want to search for an exact filename, and having an
+# index would make this very fast, but it doesn't happen often enough for me
+# to justify the many megabytes of space such an index would require.  But if
+# you prefer to have indices, feel free to create them after your database has
+# been initialized:
 #
 #   ALTER TABLE "entries" ADD INDEX(name(250))
-#
-# You'll find that choosing numbers above 250 (or a total index length above
-# 250) will generate an error from PostgreSQL about the maximum index length
-# being around 750 or so. This is because of character encoding, which in some
-# cases requires up to 3-bytes per character.  Oh, and expect this command to
-# take an extremely long time for a large database. My own database of just
-# two external hard drives has over a million entries in it already.
-#
 
-from pyPgSQL import PgSQL
+import sqlite3
 
-pg_conn = None
+conn = None
 
-import mx.DateTime
+import datetime
 import zipfile
 import tarfile
-import md5
-
-alwaysRescan = True
-try:
-    import cleanup
-except:
-    alwaysRescan = True
-
 import os
 import re
 import sys
+import optparse
 
 from subprocess import Popen, PIPE
 from os.path import *
 from stat import *
 
-openEncryptedImages = False
-
 def createTables():
-    #c.execute("DROP TABLE IF EXISTS \"metadata\"")
-    #c.execute("DROP TABLE IF EXISTS \"linkAttrs\"")
-    #c.execute("DROP TABLE IF EXISTS \"dirAttrs\"")
-    #c.execute("DROP TABLE IF EXISTS \"fileAttrs\"")
-    #c.execute("DROP TABLE IF EXISTS \"linkGroups\"")
-    #c.execute("DROP TABLE IF EXISTS \"entries\"")
-    #c.execute("DROP TABLE IF EXISTS \"volumes\"")
-
-    c = pg_conn.cursor()
+    c = conn.cursor()
 
     c.execute("""
     CREATE TABLE "volumes"
-        ("id" SERIAL PRIMARY KEY,
+        ("id" INTEGER PRIMARY KEY,
          "name" TEXT,
          "location" TEXT,
          "kind" TEXT,
-         "totalCount" INTEGER NOT NULL,
-         "totalSize" BIGINT NOT NULL)""")
+         "totalCount" INTEGER,
+         "totalSize" INTEGER)""")
 
     c.execute("""
     CREATE TABLE "entries"
-        ("id" SERIAL PRIMARY KEY,
-         "volumeId" INTEGER NOT NULL,
-         FOREIGN KEY ("volumeId") REFERENCES "volumes"("id") ON DELETE CASCADE,
-         "directoryId" INTEGER NOT NULL,
+        ("id" INTEGER PRIMARY KEY,
+         "volumeId" INTEGER,
+         "directoryId" INTEGER,
          "name" TEXT,
          "baseName" TEXT,
          "extension" TEXT,
-         "kind" INTEGER NOT NULL,
+         "kind" INTEGER,
          "permissions" INTEGER,
          "owner" INTEGER,
          "group" INTEGER,
-         "created" TIMESTAMP,
-         "dataModified" TIMESTAMP,
-         "attrsModified" TIMESTAMP,
-         "dataAccessed" TIMESTAMP,
+         "created" INTEGER,
+         "dataModified" INTEGER,
+         "attrsModified" INTEGER,
+         "dataAccessed" INTEGER,
          "volumePath" TEXT)""")
 
     c.execute("""
     CREATE TABLE "linkGroups"
-        ("id" SERIAL PRIMARY KEY)""")
+        ("id" INTEGER PRIMARY KEY)""")
 
     c.execute("""
     CREATE TABLE "fileAttrs"
-        ("id" SERIAL PRIMARY KEY,
-         "entryId" INTEGER NOT NULL,
-         FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
+        ("id" INTEGER PRIMARY KEY,
+         "entryId" INTEGER,
          "linkGroupId" INTEGER,
-         FOREIGN KEY ("linkGroupId") REFERENCES "linkGroups"("id") ON DELETE SET NULL,
-         "size" BIGINT NOT NULL,
-         "checksum" char(32) NOT NULL,
+         "size" INTEGER,
+         "checksum" CHAR(32),
          "encoding" TEXT)""")
 
     c.execute("""
     CREATE TABLE "dirAttrs"
-        ("id" SERIAL PRIMARY KEY,
-         "entryId" INTEGER NOT NULL,
-         FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
-         "thisCount" INTEGER NOT NULL,
-         "thisSize" BIGINT NOT NULL,
-         "totalCount" INTEGER NOT NULL,
-         "totalSize" BIGINT NOT NULL)""")
+        ("id" INTEGER PRIMARY KEY,
+         "entryId" INTEGER,
+         "thisCount" INTEGER,
+         "thisSize" INTEGER,
+         "totalCount" INTEGER,
+         "totalSize" INTEGER)""")
 
     c.execute("""
     CREATE TABLE "linkAttrs"
-        ("id" SERIAL PRIMARY KEY,
-         "entryId" INTEGER NOT NULL,
-         FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
-         "targetId" INTEGER NOT NULL,
-         FOREIGN KEY ("targetId") REFERENCES "entries"("id") ON DELETE RESTRICT)""")
+        ("id" INTEGER PRIMARY KEY,
+         "entryId" INTEGER,
+         "targetId" INTEGER)""")
 
     c.execute("""
     CREATE TABLE "metadata"
-        ("id" SERIAL PRIMARY KEY,
-         "entryId" INTEGER NOT NULL,
-         FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
+        ("id" INTEGER PRIMARY KEY,
+         "entryId" INTEGER,
          "metadataId" INTEGER,
-         FOREIGN KEY ("metadataId") REFERENCES "metadata"("id") ON DELETE CASCADE,
          "name" TEXT,
-         "type" INTEGER NOT NULL,
+         "type" INTEGER,
          "textValue" TEXT,
          "intValue" INTEGER,
-         "dateValue" TIMESTAMP,
-         "blobValue" BYTEA)""")
-
-    pg_conn.commit()
+         "dateValue" INTEGER,
+         "blobValue" BLOB)""")
+        
+    conn.commit()
 
 def initDatabase():
     version = 0
     try:
-        c = pg_conn.cursor()
+        c = conn.cursor()
         c.execute("SELECT \"version\" FROM \"version\"")
         row = c.fetchone()
         version = row[0]
     except:
-        c = pg_conn.cursor()
-        c.execute("CREATE TABLE \"version\"(\"version\" INTEGER NOT NULL)")
+        c = conn.cursor()
+        c.execute("CREATE TABLE \"version\"(\"version\" INTEGER)")
         c.execute("INSERT INTO \"version\" (\"version\") VALUES (0)")
-        pg_conn.commit()
+        conn.commit()
 
     if version < 1:
         createTables()
 
     if version < 10:
         # Add indices for the tables
-        #c.execute("CREATE INDEX \"entries_volumeId_idx\" ON \"entries\"(\"volumeId\")")
+        c.execute("CREATE INDEX \"entries_volumeId_idx\" ON \"entries\"(\"volumeId\")")
         c.execute("CREATE INDEX \"entries_directoryId_idx\" ON \"entries\"(\"directoryId\")")
         c.execute("CREATE INDEX \"fileAttrs_entryId_idx\" ON \"fileAttrs\"(\"entryId\")")
         c.execute("CREATE INDEX \"fileAttrs_linkGroupId_idx\" ON \"fileAttrs\"(\"linkGroupId\")")
@@ -371,9 +329,9 @@ def initDatabase():
 
     if version < 10:
         version = 10
-        c = pg_conn.cursor()
+        c = conn.cursor()
         c.execute("UPDATE \"version\" SET \"version\" = %d" % version)
-        pg_conn.commit()
+        conn.commit()
 
 ########################################################################
 
@@ -383,7 +341,7 @@ class FileAttrs:
     size      = None
     checksum  = None
     encoding  = None
-    def __init__(self): pass
+    def __init__(self): pass    # this makes pylint happy again
 
 class DirAttrs:
     entry      = None
@@ -494,10 +452,10 @@ class Entry:
         elif self.isArchive():
             return
         elif not self.isSpecialFile():
-            c = pg_conn.cursor()
+            c = conn.cursor()
             c.execute("""
               SELECT "linkGroupId", "size", "checksum", "encoding"
-                FROM "fileAttrs" WHERE "entryId" = %s""", (self.id,))
+                FROM "fileAttrs" WHERE "entryId" = ?""", (self.id,))
             result = c.fetchone()
             if result:
                 self.attrs = FileAttrs()
@@ -537,18 +495,22 @@ class Entry:
         self.permissions   = info[ST_MODE]
         self.owner         = info[ST_UID]
         self.group         = info[ST_GID]
-        self.dataAccessed  = mx.DateTime.gmtime(info[ST_ATIME])
-        self.dataModified  = mx.DateTime.gmtime(info[ST_MTIME])
-        self.attrsModified = mx.DateTime.gmtime(info[ST_CTIME])
+        self.dataAccessed  = datetime.datetime.fromtimestamp(info[ST_ATIME])
+        self.dataModified  = datetime.datetime.fromtimestamp(info[ST_MTIME])
+        self.attrsModified = datetime.datetime.fromtimestamp(info[ST_CTIME])
 
         self.infoRead = True
 
     def readChecksum(self, path):
-        fd = open(path)
-        csum = md5.new()
-        csum.update(fd.read())
-        fd.close()
-        return csum.hexdigest()
+        if opts.readChecksums:
+            import md5
+            fd = open(path)
+            csum = md5.new()
+            csum.update(fd.read())
+            fd.close()
+            return csum.hexdigest()
+        else:
+            return None
 
     def getChecksum(self):
         if not self.infoRead: self.getInfo()
@@ -653,13 +615,13 @@ class Entry:
     def load(self, id):
         self.id = id
 
-        c = pg_conn.cursor()
+        c = conn.cursor()
         c.execute("""
           SELECT "volumeId", "directoryId", "name", "baseName", "extension",
                  "kind", "permissions", "owner", "group", "created",
                  "dataModified", "attrsModified", "dataAccessed",
                  "volumePath"
-          FROM "entries" WHERE "id" = %s""", (self.id,))
+          FROM "entries" WHERE "id" = ?""", (self.id,))
 
         result = c.fetchone()
         if result:
@@ -686,93 +648,90 @@ class Entry:
 
     def store(self):
         if self.id == -1:
-            c = pg_conn.cursor()
+            c = conn.cursor()
             c.execute("""
               INSERT INTO "entries"
                 ("volumeId", "directoryId", "name", "baseName", "extension",
                  "kind", "permissions", "owner", "group", "created",
                  "dataModified", "attrsModified", "dataAccessed",
                  "volumePath")
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s)""",
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?)""",
                 (self.volume.id, self.parentId, self.name, self.baseName,
                  self.extension, self.kind, self.permissions, self.owner,
                  self.group, self.created, self.dataModified, self.attrsModified,
                  self.dataAccessed, self.volumePath))
-            pg_conn.commit()
-
-            c = pg_conn.cursor()
-            c.execute("SELECT currval(pg_get_serial_sequence('entries', 'id'))")
-            self.id = c.fetchone()[0]
+            self.id = c.lastrowid
+            conn.commit()
         else:
-            c = pg_conn.cursor()
+            c = conn.cursor()
             c.execute("""
               UPDATE "entries" SET
-                "volumeId"      = %s,
-                "directoryId"   = %s,
-                "name"          = %s,
-                "baseName"      = %s,
-                "extension"     = %s,
-                "kind"          = %s,
-                "permissions"   = %s,
-                "owner"         = %s,
-                "group"         = %s,
-                "created"       = %s,
-                "dataModified"  = %s,
-                "attrsModified" = %s,
-                "dataAccessed"  = %s,
-                "volumePath"    = %s)
-              WHERE "id" = %s""",
+                "volumeId"      = ?,
+                "directoryId"   = ?,
+                "name"          = ?,
+                "baseName"      = ?,
+                "extension"     = ?,
+                "kind"          = ?,
+                "permissions"   = ?,
+                "owner"         = ?,
+                "group"         = ?,
+                "created"       = ?,
+                "dataModified"  = ?,
+                "attrsModified" = ?,
+                "dataAccessed"  = ?,
+                "volumePath"    = ?)
+              WHERE "id" = ?""",
                 (self.volume.id, self.parentId, self.name, self.baseName,
                  self.extension, self.kind, self.permissions, self.owner,
                  self.group, self.created, self.dataModified, self.attrsModified,
                  self.dataAccessed, self.volumePath, self.id))
 
-            c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = %s", (self.id,))
-            c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = %s", (self.id,))
-            c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = %s", (self.id,))
-            pg_conn.commit()
+            c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (self.id,))
+            c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (self.id,))
+            c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (self.id,))
+            conn.commit()
 
         if self.isPlainFile() or self.isArchive():
-            c = pg_conn.cursor()
+            c = conn.cursor()
             c.execute("""
               INSERT INTO "fileAttrs"
                 ("entryId", "linkGroupId", "size", "checksum", "encoding")
-              VALUES (%s, %s, %s, %s, %s)""",
+              VALUES (?, ?, ?, ?, ?)""",
                 (self.id, None, self.attrs.size, self.attrs.checksum,
                  self.attrs.encoding))
-            pg_conn.commit()
+            conn.commit()
         elif self.isSymbolicLink():
             # jww (2007-02-24): What if the target hasn't been stored yet?
             if False:
-                c = pg_conn.cursor()
+                c = conn.cursor()
                 c.execute("""
                   INSERT INTO "linkAttrs" ("entryId", "targetId")
-                  VALUES (%s, %s)""", (self.id, self.attrs.target.id))
-                pg_conn.commit()
+                  VALUES (?, ?)""", (self.id, self.attrs.target.id))
+                conn.commit()
 
         if self.isDirectory() or self.isPackage() or self.isArchive():
             attrs = self.attrs
             if self.isArchive():
                 attrs = attrs.dirAttrs
 
-            c = pg_conn.cursor()
+            c = conn.cursor()
             c.execute("""
               INSERT INTO "dirAttrs"
                 ("entryId", "thisCount", "thisSize", "totalCount", "totalSize")
-              VALUES (%s, %s, %s, %s, %s)""",
+              VALUES (?, ?, ?, ?, ?)""",
                 (self.id, attrs.thisCount, attrs.thisSize, attrs.totalCount,
                  attrs.totalSize))
-            pg_conn.commit()
+            conn.commit()
 
     def drop(self):
         # jww (2007-08-05): What about the link group?
-        c = pg_conn.cursor()
-        c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = %s", (self.id,))
-        c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = %s", (self.id,))
-        c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = %s", (self.id,))
-        c.execute("DELETE FROM \"entries\" WHERE \"id\" = %s", (self.id,))
-        pg_conn.commit()
+        c = conn.cursor()
+        c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (self.id,))
+        c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (self.id,))
+        c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (self.id,))
+        c.execute("DELETE FROM \"entries\" WHERE \"id\" = ?", (self.id,))
+        conn.commit()
         self.id = -1
 
 def createEntry(volume, parent, path, volumePath, name):
@@ -794,9 +753,9 @@ def createEntry(volume, parent, path, volumePath, name):
     
 
 def findEntryByVolumePath(volume, volPath):
-    c = pg_conn.cursor()
+    c = conn.cursor()
     c.execute("""SELECT "id" FROM "entries"
-                 WHERE "volumeId" = %s AND "volumePath" = %s""",
+                 WHERE "volumeId" = ? AND "volumePath" = ?""",
                  (volume.id, volPath))
     data = c.fetchone()
     if data:
@@ -836,21 +795,22 @@ def processEntriesResult(c, reporter):
     return entries
 
 def findEntriesByName(name, reporter):
+    name = re.sub('\*', '%', name)
     containsPercent = re.search('%', name)
-    c = pg_conn.cursor()
+    c = conn.cursor()
     c.execute("""
       SELECT v."id", v."name", v."location", v."kind", e."id"
       FROM "volumes" as v, "entries" as e
-      WHERE e."name" %s %%s AND e."volumeId" = v."id" """ %
-                 (containsPercent and "LIKE" or "="), (name,))
+      WHERE e."name" %s ? AND e."volumeId" = v."id" """ %
+              (containsPercent and "LIKE" or "="), (name,))
     return processEntriesResult(c, reporter)
 
 def findEntriesByPath(path, reporter):
-    c = pg_conn.cursor()
+    c = conn.cursor()
     c.execute("""
       SELECT v."id", v."name", v."location", v."kind", e."id"
       FROM "volumes" as v, "entries" as e
-      WHERE e."volumePath" LIKE %s AND e."volumeId" = v."id" """, (path,))
+      WHERE e."volumePath" LIKE ? AND e."volumeId" = v."id" """, (path,))
     return processEntriesResult(c, reporter)
 
 class ZipFileEntry(Entry):              # a .zip archive file
@@ -862,7 +822,7 @@ class ZipFileEntry(Entry):              # a .zip archive file
         entry.attrs = FileAttrs()
 
         entry.attrs.size   = info.file_size
-        entry.dataModified = apply(mx.DateTime.DateTime, info.date_time)
+        entry.dataModified = apply(datetime.datetime, info.date_time)
 
         entry.infoRead = True
         self.infoRead = True
@@ -907,7 +867,7 @@ class SevenZipFileEntry(Entry):              # a .7z archive file
         entry.attrs = FileAttrs()
 
         entry.attrs.size   = long(line[26:38])
-        entry.dataModified = mx.DateTime.strptime(line[0:19], "%Y-%m-%d %H:%M:%S")
+        entry.dataModified = datetime.strptime(line[0:19], "%Y-%m-%d %H:%M:%S")
 
         entry.infoRead = True
         self.infoRead = True
@@ -999,8 +959,8 @@ class RarFileEntry(Entry):              # a .rar archive file
                     entry.attrs = FileAttrs()
 
                     entry.attrs.size   = long(items[1])
-                    entry.dataModified = mx.DateTime.strptime(items[4] + " " + items[5],
-                                                              "%d-%m-%y %H:%M")
+                    entry.dataModified = datetime.strptime(items[4] + " " + items[5],
+                                                           "%d-%m-%y %H:%M")
 
                     entry.infoRead = True
                     self.infoRead = True
@@ -1029,7 +989,7 @@ class TarFileEntry(Entry):              # an (un)compressed .tar archive file
         entry.permissions  = info.mode
         entry.owner        = info.uid
         entry.group        = info.gid
-        entry.dataModified = mx.DateTime.gmtime(info.mtime)
+        entry.dataModified = datetime.datetime.fromtimestamp(info.mtime)
 
         entry.infoRead = True
         self.infoRead = True
@@ -1052,7 +1012,8 @@ class TarFileEntry(Entry):              # an (un)compressed .tar archive file
 
             for info in thisTarFile.getmembers():
                 entry = Entry(self.volume, self, join(self.path, info.name),
-                              join(self.volumePath, info.name), info.name)
+                              join(self.volumePath, info.name),
+                              basename(info.name))
                 self.readStoredInfo(entry, info)
                 entry.store()
 
@@ -1089,7 +1050,7 @@ class DiskImageEntry(Entry):              # a .dmg file
 
             for line in pipe.readlines():
                 if re.search("Software License Agreement: true", line) or \
-                   (not openEncryptedImages and re.search("Encrypted: true", line)):
+                   (not opts.openEncryptedImages and re.search("Encrypted: true", line)):
                     skip = True
                     pipe.close()
                     return
@@ -1144,15 +1105,15 @@ class Volume:
         self.kind     = kind
 
     def clearEntries(self):
-        print "Clearing any previous entries for volume %s" % self.name
+        print "Clearing previous entries for volume %s" % self.name
 
-        c = pg_conn.cursor()
-        c.execute("""SELECT "id" FROM "volumes" WHERE "name" = %s""", self.name)
+        c = conn.cursor()
+        c.execute("""SELECT "id" FROM "volumes" WHERE "name" = ?""", (self.name,))
         data = c.fetchone()
         assert data
         volumeId = data[0]
 
-        c.execute("""SELECT "id" FROM "entries" WHERE "volumeId" = %s""", (volumeId,))
+        c.execute("""SELECT "id" FROM "entries" WHERE "volumeId" = ?""", (volumeId,))
         data = c.fetchone()
 
         idsToDelete = []
@@ -1160,129 +1121,57 @@ class Volume:
             idsToDelete.append(data[0])
             data = c.fetchone()
         
-        c = pg_conn.cursor()
+        c = conn.cursor()
         for entryId in idsToDelete:
-            c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = %s", (entryId,))
-            c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = %s", (entryId,))
-            c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = %s", (entryId,))
+            c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (entryId,))
+            c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (entryId,))
+            c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (entryId,))
 
-        c.execute("DELETE FROM \"entries\" WHERE \"volumeId\" = %s", (volumeId,))
-        c.execute("DELETE FROM \"volumes\" WHERE \"id\" = %s", (volumeId,))
-        pg_conn.commit()
-
-    def addSizes(self, entry):
-        pass
-
-    def removeSizes(self, entry):
-        pass
-
-    def catalogEntry(self, path, options):
-        print "A", path
-
-        volPath = normpath(path)[len(self.path) + 1 :]
-
-        parentPath = dirname(volPath)
-        if parentPath:
-            parent = findEntryByVolumePath(options['data'], self, parentPath)
-            assert parent
-        else:
-            parent = None
-
-        entry = createEntry(self, parent, path, volumePath = volPath,
-                            name = basename(path))
-        entry.readInfo()
-        entry.store(options['data'])
-        if not entry.isDirectory():
-            entry.scanEntries(options['data'])
-
-        self.addSizes(entry)           # update all parents and volume
-        return True
-
-    def updateEntry(self, path, options):
-        volPath = normpath(path)[len(self.path) + 1 :]
-
-        entry = findEntryByVolumePath(options['data'], self, volPath)
-        assert entry
-
-        self.removeSizes(entry)
-
-        entry.readInfo()
-        entry.scanEntries(options['data'])
-        entry.store(options['data'])
-
-        self.addSizes(entry)           # update all parents and volume
-        return True
-
-    def removeEntry(self, path, options):
-        volPath = normpath(path)[len(self.path) + 1 :]
-
-        entry = findEntryByVolumePath(options['data'], self, volPath)
-        assert entry
-
-        self.removeSizes(entry)
-
-        entry.drop()
-        return True
+        c.execute("DELETE FROM \"entries\" WHERE \"volumeId\" = ?", (volumeId,))
+        c.execute("DELETE FROM \"volumes\" WHERE \"id\" = ?", (volumeId,))
+        conn.commit()
 
     def scanEntries(self):
-        if alwaysRescan and self.id > 0:
+        if self.id > 0:
             self.clearEntries()
             self.id = -1
 
         if self.id < 0:
-            c = pg_conn.cursor()
+            c = conn.cursor()
             c.execute("""
               INSERT INTO "volumes" ("name", "location", "kind", "totalCount", "totalSize")
-              VALUES (%s, %s, %s, 0, 0)""", (self.name, self.location, self.kind))
-            pg_conn.commit()
+              VALUES (?, ?, ?, 0, 0)""", (self.name, self.location, self.kind))
+            self.id = c.lastrowid
+            conn.commit()
 
-            c = pg_conn.cursor()
-            c.execute("SELECT currval(pg_get_serial_sequence('volumes', 'id'))")
-            self.id = c.fetchone()[0]
+        self.topEntry = Entry(self, None, self.path, "", "")
+        self.topEntry.readInfo()
 
-        if alwaysRescan:
-            self.topEntry = Entry(self, None, self.path, "", "")
-            self.topEntry.readInfo()
-
-            if self.topEntry.isDirectory():
-                self.topEntry.scanEntries()
-                self.topEntry.store()
-                self.totalCount = self.topEntry.attrs.totalCount
-                self.totalSize  = self.topEntry.attrs.totalSize
-            elif self.topEntry.isArchive():
-                self.topEntry.scanEntries()
-                self.topEntry.store()
-                self.totalCount = self.topEntry.attrs.dirAttrs.totalCount
-                self.totalSize  = self.topEntry.attrs.dirAttrs.totalSize
-            else:
-                print "Volume is neither a directory nor an archive"
+        if self.topEntry.isDirectory():
+            self.topEntry.scanEntries()
+            self.topEntry.store()
+            self.totalCount = self.topEntry.attrs.totalCount
+            self.totalSize  = self.topEntry.attrs.totalSize
+        elif self.topEntry.isArchive():
+            self.topEntry.scanEntries()
+            self.topEntry.store()
+            self.totalCount = self.topEntry.attrs.dirAttrs.totalCount
+            self.totalSize  = self.topEntry.attrs.dirAttrs.totalSize
         else:
-            supportDir = expanduser('~/Library/Application Support/DiskCataloger')
-
-            options = {
-                'directory':       self.path,
-                'database':        join(supportDir, "%s.dat" % self.name),
-                'mtime':           True,
-                'dryrun':          True,
-                'onFileAdded':     self.catalogEntry,
-                'onFileChanged':   self.updateEntry,
-                'onFileRemoved':   self.removeEntry,
-                'onFilePastLimit': None,
-            }
-            cleanup.scanDirectory(**options)
+            print "Volume is neither a directory nor an archive"
 
         c.execute("""
-          UPDATE "volumes" SET "totalCount" = %s, "totalSize" = %s WHERE "id" = %s""",
+          UPDATE "volumes" SET "totalCount" = ?, "totalSize" = ? WHERE "id" = ?""",
             (self.totalCount, self.totalSize, self.id))
 
         print "Volume", self.path, "total count is", self.totalCount
         print "Volume", self.path, "total size  is", self.totalSize
 
 def findVolumeByName(name):
-    c = pg_conn.cursor()
+    c = conn.cursor()
     c.execute("""
       SELECT "id", "location", "kind", "totalCount", "totalSize"
-      FROM "volumes" WHERE "name"=%s""", (name,))
+      FROM "volumes" WHERE "name" = ?""", (name,))
     result = c.fetchone()
     if result:
         (id, location, kind, totalCount, totalSize) = result
@@ -1298,21 +1187,39 @@ def findVolumeByName(name):
 
 ########################################################################
 
-if len(sys.argv) < 2:
-    sys.exit(1)
+parser = optparse.OptionParser()
 
-pg_conn = PgSQL.connect(":5432:catalog:johnw:0M^o72WjmZ4dj7t7")
-if not pg_conn:
-    print "Could not connect to PostgreSQL database."
+parser.add_option('-E', '--open-encrypted',
+                  action='store_true', dest='openEncryptedImages', default=False,
+                  help='descend into encrypted images (may ask for password)')
+parser.add_option('-C', '--checksum',
+                  action='store_true', dest='readChecksums', default=False,
+                  help='calculate MD5 checksum of cataloged files (where possible)')
+parser.add_option('-f', '--file', metavar='CATALOG_FILE',
+                  type='string', action='store', dest='databaseName',
+                  help='filename where the data will be stored')
+parser.add_option('-k', '--kind',
+                  type='string', action='store', dest='volumeKind',
+                  help='kind of the volume being indexed')
+parser.add_option('-l', '--location',
+                  type='string', action='store', dest='volumeLocation',
+                  help='location of the volume being indexed')
+parser.add_option('-v', '--verbose',
+                  action='store_true', dest='verbose', default=False,
+                  help='report activity options.verbosely')
+
+(opts, args) = parser.parse_args()
+
+conn = sqlite3.connect(opts.databaseName)
+if not conn:
+    print "Could not connect to SQLite3 database '%s'" % opts.databaseName
     sys.exit(1)
 
 try:
-    cursor = pg_conn.cursor()
-    cursor.execute("SET CLIENT_ENCODING TO 'UTF8'")
-
+    cursor = conn.cursor()
     initDatabase()
 
-    command = sys.argv[1]
+    command = args[0]
 
     def print_result(entry):
         csum = entry.getChecksum()
@@ -1322,52 +1229,41 @@ try:
             print entry.volume.name, "=>", entry.volumePath
         sys.stdout.flush()
 
-    if command == "initdb":
-        pass
+    if command == "name":
+        if len(args) == 1:
+            print "usage: catalog name <LIKE PATTERN>"
+            sys.exit(1)
 
-    elif command == "name":
-        for name in sys.argv[2:]:
+        for name in args[1:]:
             findEntriesByName(name, print_result)
 
-    elif command == "path" or command == "find":
-        for path in sys.argv[2:]:
+    elif command == "path":
+        if len(args) == 1:
+            print "usage: catalog path <LIKE PATTERN>"
+            sys.exit(1)
+
+        for path in args[1:]:
             findEntriesByPath(path, print_result)
 
     elif command == "index":
-        path = "path"
-        name = "name"
-        kind = "kind"
-        location = "location"
-
-        args = sys.argv[1:]
-        while len(args) > 0:
-            if args[0] == "--path":
-                path = args[1]
-                args = args[1:]
-            elif args[0] == "--name":
-                name = args[1]
-                args = args[1:]
-            elif args[0] == "--location":
-                location = args[1]
-                args = args[1:]
-            elif args[0] == "--kind":
-                kind = args[1]
-                args = args[1:]
-            elif args[0] == "--include-encrypted":
-                openEncryptedImages = True
-            args = args[1:]
-
-        if path == "path":
-            print "The volume path has not been specified"
+        if len(args) == 1:
+            print "usage: catalog index <PATH> [NAME]"
             sys.exit(1)
+
+        path = args[1]
+
+        if len(args) == 2:
+            name = basename(path)
+        else:
+            name = args[2]
 
         vol = findVolumeByName(name)
         if not vol:
-            vol = Volume(path, name, location, kind)
+            vol = Volume(path, name, opts.volumeLocation, opts.volumeKind)
         else:
             vol.path = normpath(path)
 
         vol.scanEntries()
 
 finally:
-    pg_conn.close()
+    conn.close()
