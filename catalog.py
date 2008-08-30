@@ -1,6 +1,6 @@
-#!/usr/bin/env python2.5
+#!/usr/bin/env python
 #
-# catalog.py, version 12
+# catalog.py, version 1.3
 #   by John Wiegley <johnw@newartisans.com>
 #
 # Depends on: Python (>= 2.5.1)
@@ -867,7 +867,7 @@ class SevenZipFileEntry(Entry):              # a .7z archive file
         entry.attrs = FileAttrs()
 
         entry.attrs.size   = long(line[26:38])
-        entry.dataModified = datetime.strptime(line[0:19], "%Y-%m-%d %H:%M:%S")
+        entry.dataModified = datetime.datetime.strptime(line[0:19], "%Y-%m-%d %H:%M:%S")
 
         entry.infoRead = True
         self.infoRead = True
@@ -959,8 +959,8 @@ class RarFileEntry(Entry):              # a .rar archive file
                     entry.attrs = FileAttrs()
 
                     entry.attrs.size   = long(items[1])
-                    entry.dataModified = datetime.strptime(items[4] + " " + items[5],
-                                                           "%d-%m-%y %H:%M")
+                    entry.dataModified = datetime.datetime.strptime(items[4] + " " + items[5],
+                                                                    "%d-%m-%y %H:%M")
 
                     entry.infoRead = True
                     self.infoRead = True
@@ -1197,6 +1197,7 @@ parser.add_option('-C', '--checksum',
                   help='calculate MD5 checksum of cataloged files (where possible)')
 parser.add_option('-f', '--file', metavar='CATALOG_FILE',
                   type='string', action='store', dest='databaseName',
+                  default=os.path.expanduser('~/.catalogdb'),
                   help='filename where the data will be stored')
 parser.add_option('-k', '--kind',
                   type='string', action='store', dest='volumeKind',
