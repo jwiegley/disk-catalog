@@ -9,7 +9,7 @@
 # TODO
 #
 # - add support for storing MD5 checksums
-# - add support for comparing a directory to a recorded volume 
+# - add support for comparing a directory to a recorded volume
 # - Write "ext" basic query (for searching based on file extensions)
 # - Exclude trashes, device files (/dev, /proc), and mount locations
 
@@ -113,7 +113,7 @@
 #   "id"             INT        The entry's id
 #   "volumeId"       INT        The id of the volume it resides in
 #   "directoryId"    INT        The id of its parent (directory) entry
-#   "name"           TEXT       Its filename 
+#   "name"           TEXT       Its filename
 #   "baseName"       TEXT       Its basename (sans extension)
 #   "extension"      TEXT       Its extension
 #   "kind"           INT        Its type (see below)
@@ -296,7 +296,7 @@ def createTables():
          "intValue" INTEGER,
          "dateValue" INTEGER,
          "blobValue" BLOB)""")
-        
+
     conn.commit()
 
 def initDatabase():
@@ -629,7 +629,7 @@ class Entry:
              kind, permissions, owner, group, created,
              dataModified, attrsModified, dataAccessed,
              volumePath) = result
-            
+
             self.volumeId      = volumeId
             self.parent        = None
             self.parentId      = parentId
@@ -750,7 +750,7 @@ def createEntry(volume, parent, path, volumePath, name):
         return apply(TarFileEntry, args)
     else:
         return apply(Entry, args)
-    
+
 
 def findEntryByVolumePath(volume, volPath):
     c = conn.cursor()
@@ -806,6 +806,7 @@ def findEntriesByName(name, reporter):
     return processEntriesResult(c, reporter)
 
 def findEntriesByPath(path, reporter):
+    path = re.sub('\*', '%', path)
     c = conn.cursor()
     c.execute("""
       SELECT v."id", v."name", v."location", v."kind", e."id"
@@ -884,7 +885,7 @@ class SevenZipFileEntry(Entry):              # a .7z archive file
         attrs.totalSize  = 0
 
         pipe = None
-        
+
         try:
             pipe = Popen("7za l \"%s\"" % self.path, shell = True,
                          stdout = PIPE).stdout
@@ -1043,7 +1044,7 @@ class DiskImageEntry(Entry):              # a .dmg file
         pipe = None
         path = None
         skip = False
-        
+
         try:
             pipe = Popen("hdiutil imageinfo \"%s\"" % self.path,
                          shell = True, stdout = PIPE).stdout
@@ -1068,7 +1069,7 @@ class DiskImageEntry(Entry):              # a .dmg file
 
         except Exception, msg:
             print "Failed to index %s:" % self.path, msg
-            
+
         if pipe:
             pipe.close()
 
@@ -1120,7 +1121,7 @@ class Volume:
         while data:
             idsToDelete.append(data[0])
             data = c.fetchone()
-        
+
         c = conn.cursor()
         for entryId in idsToDelete:
             c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (entryId,))
