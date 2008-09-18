@@ -5,6 +5,7 @@
 #
 # Depends on: Python (>= 2.5.1)
 #   Optional: p7zip, rar
+#   Optional: PostgreSQL (>= 8.2.5)
 
 # TODO
 #
@@ -24,6 +25,12 @@
 #   py25-hashlib
 #   py25-zlib
 #   p7zip
+#ifdef PGSQL
+#   postgresql82 +python
+#   postgresql82-server
+#   py25-pgsql
+#   py25-mx-base
+#endif
 #
 # If you want to inspect .rar files, you'll need a copy of the "rar"
 # command-line utility.  I use the one that comes with the application
@@ -31,6 +38,20 @@
 # bundle to someplace along your PATH.
 
 # QUICK USAGE GUIDE
+#
+#ifdef PGSQL
+#
+# Create a database user that will own the catalog database, example:
+#
+#   sudo -u postgres createuser --password --pwprompt --createdb \
+#        --createrole --echo catalog_admin
+#
+# Create the catalog database, example:
+#
+#   sudo -u postgres createdb --password --owner catalog_admin \
+#        --echo catalog
+#
+#endif
 #
 # First, index your volume(s).  You can run this kind of command over and over
 # again:
@@ -210,12 +231,20 @@
 # been initialized:
 #
 #   ALTER TABLE "entries" ADD INDEX(name(250))
-
-import sqlite3
+#
+#ifdef PGSQL
+#
+# You'll find that choosing numbers above 250 (or a total index length above
+# 250) will generate an error from PostgreSQL about the maximum index length
+# being around 750 or so. This is because of character encoding, which in some
+# cases requires up to 3-bytes per character.  Oh, and expect this command to
+# take an extremely long time for a large database. My own database of just
+# two external hard drives has over a million entries in it already.
+#
+#endif
 
 conn = None
 
-import datetime
 import zipfile
 import tarfile
 import os
@@ -227,7 +256,93 @@ from subprocess import Popen, PIPE
 from os.path import *
 from stat import *
 
-def createTables():
+def doquery(cursor, sql, args):
+    if opts.databaseName:
+        return cursor.execute(re.sub('\?', '%s', sql), args)
+    else:
+        return cursor.execute(sql, args)
+
+def createPostgreSQLTables():
+    c = conn.cursor()
+
+    c.execute("""
+    CREATE TABLE "volumes"
+        ("id" SERIAL PRIMARY KEY,
+         "name" TEXT,
+         "location" TEXT,
+         "kind" TEXT,
+         "totalCount" INTEGER NOT NULL,
+         "totalSize" BIGINT NOT NULL)""")
+
+    c.execute("""
+    CREATE TABLE "entries"
+        ("id" SERIAL PRIMARY KEY,
+         "volumeId" INTEGER NOT NULL,
+         FOREIGN KEY ("volumeId") REFERENCES "volumes"("id") ON DELETE CASCADE,
+         "directoryId" INTEGER NOT NULL,
+         "name" TEXT,
+         "baseName" TEXT,
+         "extension" TEXT,
+         "kind" INTEGER NOT NULL,
+         "permissions" INTEGER,
+         "owner" INTEGER,
+         "group" INTEGER,
+         "created" TIMESTAMP,
+         "dataModified" TIMESTAMP,
+         "attrsModified" TIMESTAMP,
+         "dataAccessed" TIMESTAMP,
+         "volumePath" TEXT)""")
+
+    c.execute("""
+    CREATE TABLE "linkGroups"
+        ("id" SERIAL PRIMARY KEY)""")
+
+    c.execute("""
+    CREATE TABLE "fileAttrs"
+        ("id" SERIAL PRIMARY KEY,
+         "entryId" INTEGER NOT NULL,
+         FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
+         "linkGroupId" INTEGER,
+         FOREIGN KEY ("linkGroupId") REFERENCES "linkGroups"("id") ON DELETE SET NULL,
+         "size" BIGINT NOT NULL,
+         "checksum" char(32),
+         "encoding" TEXT)""")
+
+    c.execute("""
+    CREATE TABLE "dirAttrs"
+        ("id" SERIAL PRIMARY KEY,
+         "entryId" INTEGER NOT NULL,
+         FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
+         "thisCount" INTEGER NOT NULL,
+         "thisSize" BIGINT NOT NULL,
+         "totalCount" INTEGER NOT NULL,
+         "totalSize" BIGINT NOT NULL)""")
+
+    c.execute("""
+    CREATE TABLE "linkAttrs"
+        ("id" SERIAL PRIMARY KEY,
+         "entryId" INTEGER NOT NULL,
+         FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
+         "targetId" INTEGER NOT NULL,
+         FOREIGN KEY ("targetId") REFERENCES "entries"("id") ON DELETE RESTRICT)""")
+
+    c.execute("""
+    CREATE TABLE "metadata"
+        ("id" SERIAL PRIMARY KEY,
+         "entryId" INTEGER NOT NULL,
+         FOREIGN KEY ("entryId") REFERENCES "entries"("id") ON DELETE CASCADE,
+         "metadataId" INTEGER,
+         FOREIGN KEY ("metadataId") REFERENCES "metadata"("id") ON DELETE CASCADE,
+         "name" TEXT,
+         "type" INTEGER NOT NULL,
+         "textValue" TEXT,
+         "intValue" INTEGER,
+         "dateValue" TIMESTAMP,
+         "blobValue" BYTEA)""")
+
+    conn.commit()
+
+def createSQLite3Tables():
     c = conn.cursor()
 
     c.execute("""
@@ -313,7 +428,10 @@ def initDatabase():
         conn.commit()
 
     if version < 1:
-        createTables()
+        if opts.databaseName:
+            createPostgreSQLTables()
+        else:
+            createSQLite3Tables()
 
     if version < 10:
         # Add indices for the tables
@@ -453,7 +571,7 @@ class Entry:
             return
         elif not self.isSpecialFile():
             c = conn.cursor()
-            c.execute("""
+            doquery(c, """
               SELECT "linkGroupId", "size", "checksum", "encoding"
                 FROM "fileAttrs" WHERE "entryId" = ?""", (self.id,))
             result = c.fetchone()
@@ -495,9 +613,15 @@ class Entry:
         self.permissions   = info[ST_MODE]
         self.owner         = info[ST_UID]
         self.group         = info[ST_GID]
-        self.dataAccessed  = datetime.datetime.fromtimestamp(info[ST_ATIME])
-        self.dataModified  = datetime.datetime.fromtimestamp(info[ST_MTIME])
-        self.attrsModified = datetime.datetime.fromtimestamp(info[ST_CTIME])
+
+        if opts.databaseName:
+            self.dataAccessed  = mx.DateTime.DateTimeFromTicks(info[ST_ATIME])
+            self.dataModified  = mx.DateTime.DateTimeFromTicks(info[ST_MTIME])
+            self.attrsModified = mx.DateTime.DateTimeFromTicks(info[ST_CTIME])
+        else:
+            self.dataAccessed  = datetime.datetime.fromtimestamp(info[ST_ATIME])
+            self.dataModified  = datetime.datetime.fromtimestamp(info[ST_MTIME])
+            self.attrsModified = datetime.datetime.fromtimestamp(info[ST_CTIME])
 
         self.infoRead = True
 
@@ -616,7 +740,7 @@ class Entry:
         self.id = id
 
         c = conn.cursor()
-        c.execute("""
+        doquery(c, """
           SELECT "volumeId", "directoryId", "name", "baseName", "extension",
                  "kind", "permissions", "owner", "group", "created",
                  "dataModified", "attrsModified", "dataAccessed",
@@ -649,7 +773,7 @@ class Entry:
     def store(self):
         if self.id == -1:
             c = conn.cursor()
-            c.execute("""
+            doquery(c, """
               INSERT INTO "entries"
                 ("volumeId", "directoryId", "name", "baseName", "extension",
                  "kind", "permissions", "owner", "group", "created",
@@ -661,11 +785,18 @@ class Entry:
                  self.extension, self.kind, self.permissions, self.owner,
                  self.group, self.created, self.dataModified, self.attrsModified,
                  self.dataAccessed, self.volumePath))
-            self.id = c.lastrowid
-            conn.commit()
+
+	    if not opts.databaseName:
+                self.id = c.lastrowid
+            	conn.commit()
+	    else:
+            	conn.commit()
+                c = conn.cursor()
+                c.execute("SELECT currval(pg_get_serial_sequence('entries', 'id'))")
+                self.id = c.fetchone()[0]
         else:
             c = conn.cursor()
-            c.execute("""
+            doquery(c, """
               UPDATE "entries" SET
                 "volumeId"      = ?,
                 "directoryId"   = ?,
@@ -687,14 +818,14 @@ class Entry:
                  self.group, self.created, self.dataModified, self.attrsModified,
                  self.dataAccessed, self.volumePath, self.id))
 
-            c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (self.id,))
-            c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (self.id,))
-            c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (self.id,))
+            doquery(c, "DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (self.id,))
+            doquery(c, "DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (self.id,))
+            doquery(c, "DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (self.id,))
             conn.commit()
 
         if self.isPlainFile() or self.isArchive():
             c = conn.cursor()
-            c.execute("""
+            doquery(c, """
               INSERT INTO "fileAttrs"
                 ("entryId", "linkGroupId", "size", "checksum", "encoding")
               VALUES (?, ?, ?, ?, ?)""",
@@ -705,7 +836,7 @@ class Entry:
             # jww (2007-02-24): What if the target hasn't been stored yet?
             if False:
                 c = conn.cursor()
-                c.execute("""
+                doquery(c, """
                   INSERT INTO "linkAttrs" ("entryId", "targetId")
                   VALUES (?, ?)""", (self.id, self.attrs.target.id))
                 conn.commit()
@@ -716,7 +847,7 @@ class Entry:
                 attrs = attrs.dirAttrs
 
             c = conn.cursor()
-            c.execute("""
+            doquery(c, """
               INSERT INTO "dirAttrs"
                 ("entryId", "thisCount", "thisSize", "totalCount", "totalSize")
               VALUES (?, ?, ?, ?, ?)""",
@@ -727,10 +858,10 @@ class Entry:
     def drop(self):
         # jww (2007-08-05): What about the link group?
         c = conn.cursor()
-        c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (self.id,))
-        c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (self.id,))
-        c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (self.id,))
-        c.execute("DELETE FROM \"entries\" WHERE \"id\" = ?", (self.id,))
+        doquery(c, "DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (self.id,))
+        doquery(c, "DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (self.id,))
+        doquery(c, "DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (self.id,))
+        doquery(c, "DELETE FROM \"entries\" WHERE \"id\" = ?", (self.id,))
         conn.commit()
         self.id = -1
 
@@ -754,7 +885,7 @@ def createEntry(volume, parent, path, volumePath, name):
 
 def findEntryByVolumePath(volume, volPath):
     c = conn.cursor()
-    c.execute("""SELECT "id" FROM "entries"
+    doquery(c, """SELECT "id" FROM "entries"
                  WHERE "volumeId" = ? AND "volumePath" = ?""",
                  (volume.id, volPath))
     data = c.fetchone()
@@ -798,7 +929,7 @@ def findEntriesByName(name, reporter):
     name = re.sub('\*', '%', name)
     containsPercent = re.search('%', name)
     c = conn.cursor()
-    c.execute("""
+    doquery(c, """
       SELECT v."id", v."name", v."location", v."kind", e."id"
       FROM "volumes" as v, "entries" as e
       WHERE e."name" %s ? AND e."volumeId" = v."id" """ %
@@ -808,7 +939,7 @@ def findEntriesByName(name, reporter):
 def findEntriesByPath(path, reporter):
     path = re.sub('\*', '%', path)
     c = conn.cursor()
-    c.execute("""
+    doquery(c, """
       SELECT v."id", v."name", v."location", v."kind", e."id"
       FROM "volumes" as v, "entries" as e
       WHERE e."volumePath" LIKE ? AND e."volumeId" = v."id" """, (path,))
@@ -823,7 +954,10 @@ class ZipFileEntry(Entry):              # a .zip archive file
         entry.attrs = FileAttrs()
 
         entry.attrs.size   = info.file_size
-        entry.dataModified = apply(datetime.datetime, info.date_time)
+        if opts.databaseName:
+            entry.dataModified = apply(mx.DateTime.DateTime, info.date_time)
+        else:
+            entry.dataModified = apply(datetime.datetime, info.date_time)
 
         entry.infoRead = True
         self.infoRead = True
@@ -868,7 +1002,10 @@ class SevenZipFileEntry(Entry):              # a .7z archive file
         entry.attrs = FileAttrs()
 
         entry.attrs.size   = long(line[26:38])
-        entry.dataModified = datetime.datetime.strptime(line[0:19], "%Y-%m-%d %H:%M:%S")
+        if opts.databaseName:
+            entry.dataModified = mx.DateTime.strptime(line[0:19], "%Y-%m-%d %H:%M:%S")
+        else:
+            entry.dataModified = datetime.datetime.strptime(line[0:19], "%Y-%m-%d %H:%M:%S")
 
         entry.infoRead = True
         self.infoRead = True
@@ -960,8 +1097,12 @@ class RarFileEntry(Entry):              # a .rar archive file
                     entry.attrs = FileAttrs()
 
                     entry.attrs.size   = long(items[1])
-                    entry.dataModified = datetime.datetime.strptime(items[4] + " " + items[5],
-                                                                    "%d-%m-%y %H:%M")
+                    if opts.databaseName:
+                        entry.dataModified = mx.DateTime.strptime(items[4] + " " + items[5],
+                                                                  "%d-%m-%y %H:%M")
+                    else:
+                        entry.dataModified = datetime.datetime.strptime(items[4] + " " + items[5],
+                                                                        "%d-%m-%y %H:%M")
 
                     entry.infoRead = True
                     self.infoRead = True
@@ -990,7 +1131,10 @@ class TarFileEntry(Entry):              # an (un)compressed .tar archive file
         entry.permissions  = info.mode
         entry.owner        = info.uid
         entry.group        = info.gid
-        entry.dataModified = datetime.datetime.fromtimestamp(info.mtime)
+        if opts.databaseName:
+            entry.dataModified  = mx.DateTime.DateTimeFromTicks(info.mtime)
+        else:
+            entry.dataModified = datetime.datetime.fromtimestamp(info.mtime)
 
         entry.infoRead = True
         self.infoRead = True
@@ -1109,12 +1253,12 @@ class Volume:
         print "Clearing previous entries for volume %s" % self.name
 
         c = conn.cursor()
-        c.execute("""SELECT "id" FROM "volumes" WHERE "name" = ?""", (self.name,))
+        doquery(c, """SELECT "id" FROM "volumes" WHERE "name" = ?""", (self.name,))
         data = c.fetchone()
         assert data
         volumeId = data[0]
 
-        c.execute("""SELECT "id" FROM "entries" WHERE "volumeId" = ?""", (volumeId,))
+        doquery(c, """SELECT "id" FROM "entries" WHERE "volumeId" = ?""", (volumeId,))
         data = c.fetchone()
 
         idsToDelete = []
@@ -1124,12 +1268,12 @@ class Volume:
 
         c = conn.cursor()
         for entryId in idsToDelete:
-            c.execute("DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (entryId,))
-            c.execute("DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (entryId,))
-            c.execute("DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (entryId,))
+            doquery(c, "DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (entryId,))
+            doquery(c, "DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (entryId,))
+            doquery(c, "DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (entryId,))
 
-        c.execute("DELETE FROM \"entries\" WHERE \"volumeId\" = ?", (volumeId,))
-        c.execute("DELETE FROM \"volumes\" WHERE \"id\" = ?", (volumeId,))
+        doquery(c, "DELETE FROM \"entries\" WHERE \"volumeId\" = ?", (volumeId,))
+        doquery(c, "DELETE FROM \"volumes\" WHERE \"id\" = ?", (volumeId,))
         conn.commit()
 
     def scanEntries(self):
@@ -1139,11 +1283,18 @@ class Volume:
 
         if self.id < 0:
             c = conn.cursor()
-            c.execute("""
+            doquery(c, """
               INSERT INTO "volumes" ("name", "location", "kind", "totalCount", "totalSize")
               VALUES (?, ?, ?, 0, 0)""", (self.name, self.location, self.kind))
-            self.id = c.lastrowid
-            conn.commit()
+
+	    if not opts.databaseName:
+                self.id = c.lastrowid
+            	conn.commit()
+	    else:
+            	conn.commit()
+                c = conn.cursor()
+                c.execute("SELECT currval(pg_get_serial_sequence('volumes', 'id'))")
+                self.id = c.fetchone()[0]
 
         self.topEntry = Entry(self, None, self.path, "", "")
         self.topEntry.readInfo()
@@ -1161,7 +1312,7 @@ class Volume:
         else:
             print "Volume is neither a directory nor an archive"
 
-        c.execute("""
+        doquery(c, """
           UPDATE "volumes" SET "totalCount" = ?, "totalSize" = ? WHERE "id" = ?""",
             (self.totalCount, self.totalSize, self.id))
 
@@ -1170,7 +1321,7 @@ class Volume:
 
 def findVolumeByName(name):
     c = conn.cursor()
-    c.execute("""
+    doquery(c, """
       SELECT "id", "location", "kind", "totalCount", "totalSize"
       FROM "volumes" WHERE "name" = ?""", (name,))
     result = c.fetchone()
@@ -1196,29 +1347,58 @@ parser.add_option('-E', '--open-encrypted',
 parser.add_option('-C', '--checksum',
                   action='store_true', dest='readChecksums', default=False,
                   help='calculate MD5 checksum of cataloged files (where possible)')
-parser.add_option('-f', '--file', metavar='CATALOG_FILE',
+parser.add_option('-d', '--database', metavar='DATABASE',
                   type='string', action='store', dest='databaseName',
+                  help='name of the PostgreSQL database where data is stored')
+parser.add_option('-f', '--file', metavar='FILE',
+                  type='string', action='store', dest='databaseFile',
                   default=os.path.expanduser('~/.catalogdb'),
-                  help='filename where the data will be stored')
-parser.add_option('-k', '--kind',
+                  help='SQLite3 filen where data is stored')
+parser.add_option('-k', '--kind', metavar='KIND',
                   type='string', action='store', dest='volumeKind',
                   help='kind of the volume being indexed')
-parser.add_option('-l', '--location',
+parser.add_option('-l', '--location', metavar='LOCATION',
                   type='string', action='store', dest='volumeLocation',
                   help='location of the volume being indexed')
+parser.add_option('-p', '--pass', metavar='PASS',
+                  type='string', action='store', dest='databasePass',
+                  help='PostgreSQL user\'s password')
+parser.add_option('-P', '--port', metavar='PORT',
+                  type='string', action='store', dest='databasePort',
+                  help='PostgreSQL port', default="5432")
+parser.add_option('-u', '--user', metavar='USER',
+                  type='string', action='store', dest='databaseUser',
+                  help='name of the PostgreSQL user to connect as')
 parser.add_option('-v', '--verbose',
                   action='store_true', dest='verbose', default=False,
                   help='report activity options.verbosely')
 
 (opts, args) = parser.parse_args()
 
-conn = sqlite3.connect(opts.databaseName)
-if not conn:
-    print "Could not connect to SQLite3 database '%s'" % opts.databaseName
-    sys.exit(1)
+if opts.databaseName:
+    from pyPgSQL import PgSQL
+    import mx.DateTime
+    conn = PgSQL.connect(":%s:%s:%s:%s" % (opts.databasePort,
+                                           opts.databaseName,
+                                           opts.databaseUser,
+                                           opts.databasePass))
+    if not conn:
+        print "Could not connect to PostgreSQL database '%s' as '%s'" \
+            % (opts.databaseName, opts.databaseUser)
+        sys.exit(1)
+else:
+    import sqlite3
+    import datetime
+    conn = sqlite3.connect(opts.databaseFile)
+    if not conn:
+        print "Could not connect to SQLite3 database '%s'" % opts.databaseFile
+        sys.exit(1)
 
 try:
     cursor = conn.cursor()
+    if opts.databaseName:
+        cursor.execute("SET CLIENT_ENCODING TO 'UTF8'")
+
     initDatabase()
 
     command = args[0]
