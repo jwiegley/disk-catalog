@@ -15,7 +15,7 @@ from getopt import getopt, GetoptError
 
 from stat import ST_ATIME, ST_MTIME, ST_MODE, S_ISDIR
 from os.path import (join, expanduser, dirname, basename,
-                     exists, lexists, isfile, isdir)
+                     exists, lexists, isfile, isdir, islink)
 
 rightNow = datetime.now()
 
@@ -79,6 +79,9 @@ def safeRun(cmd, path, sudo = False, dryrun = False):
 
 def safeRemove(entry):
     entry.remove()
+
+def safeTrash(entry):
+    entry.trash()
 
 
 class Entry(object):
@@ -247,7 +250,7 @@ class Entry(object):
 
         fileRemoved = False
 
-        if isfile(self.path):
+        if isfile(self.path) or islink(self.path):
             secure = self.secure
             if not secure and self._scanner.securetag and osxtags and \
                osxtags.hastag(self.path, self._scanner.securetag):
@@ -277,7 +280,8 @@ class Entry(object):
                 fileRemoved = True
             else:
                 l.error("Could not remove file: %s\n" % self)
-        else:
+
+        elif lexists(self.path):
             try:
                 l.debug("Calling: cleanup.deltree('%s')" % self.path)
                 if not self.dryrun:
@@ -293,6 +297,41 @@ class Entry(object):
                 l.error("Could not remove dir: %s\n" % self.path)
 
         return fileRemoved
+
+    def trash(self):
+        if islink(self.path):
+            self.remove()
+            return True
+
+        elif exists(self.path):
+            base    = basename(self.path)
+            target  = base
+            ftarget = join(expanduser("~/.Trash"), target)
+            index   = 1
+
+            while lexists(ftarget):
+                target = "%s-%d" % (base, index)
+                index += 1
+                ftarget = join(expanduser("~/.Trash"), target)
+
+            try:
+                l.debug("Calling: os.rename('%s', '%s')" % (self.path, ftarget))
+                if not self.dryrun:
+                    os.rename(self.path, ftarget)
+            except:
+                if self.sudo:
+                    try:
+                        run('sudo /bin/mv %%s "%s"' % ftarget,
+                            self.path, self.dryrun)
+                    except:
+                        l.error("Error moving file with sudo: %s" % self)
+
+            if self.dryrun or not lexists(self.path):
+                return True
+            else:
+                l.error("Could not trash file: %s\n" % self)
+
+        return False
 
     def __getstate__(self):
         x = self.timestamp; assert x
