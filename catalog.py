@@ -1258,21 +1258,25 @@ class Volume:
         assert data
         volumeId = data[0]
 
-        doquery(c, """SELECT "id" FROM "entries" WHERE "volumeId" = ?""", (volumeId,))
-        data = c.fetchone()
-
-        idsToDelete = []
-        while data:
-            idsToDelete.append(data[0])
+        # Since SQLite3 does not support cascading operations, we're required
+        # to do the removal manually.
+        if not opts.databaseName:
+            doquery(c, """SELECT "id" FROM "entries" WHERE "volumeId" = ?""", (volumeId,))
             data = c.fetchone()
 
-        c = conn.cursor()
-        for entryId in idsToDelete:
-            doquery(c, "DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (entryId,))
-            doquery(c, "DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (entryId,))
-            doquery(c, "DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (entryId,))
+            idsToDelete = []
+            while data:
+                idsToDelete.append(data[0])
+                data = c.fetchone()
 
-        doquery(c, "DELETE FROM \"entries\" WHERE \"volumeId\" = ?", (volumeId,))
+            c = conn.cursor()
+            for entryId in idsToDelete:
+                doquery(c, "DELETE FROM \"fileAttrs\" WHERE \"entryId\" = ?", (entryId,))
+                doquery(c, "DELETE FROM \"linkAttrs\" WHERE \"entryId\" = ?", (entryId,))
+                doquery(c, "DELETE FROM \"dirAttrs\" WHERE \"entryId\" = ?", (entryId,))
+
+            doquery(c, "DELETE FROM \"entries\" WHERE \"volumeId\" = ?", (volumeId,))
+
         doquery(c, "DELETE FROM \"volumes\" WHERE \"id\" = ?", (volumeId,))
         conn.commit()
 
