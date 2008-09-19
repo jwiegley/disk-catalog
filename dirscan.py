@@ -837,7 +837,7 @@ def showVersion():
     print """
 dirscan.py, version 1.0
 
-Copyright (c) 2007, by John Wiegley <johnw@newartisans.com>
+Copyright (c) 2007-2008, by John Wiegley <johnw@newartisans.com>
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
 ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
