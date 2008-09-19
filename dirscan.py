@@ -374,6 +374,7 @@ class DirScanner(object):
                  depth            = -1,
                  dryrun           = False,
                  ignoreFiles      = None,
+                 maxSize          = None,
                  minimalScan      = False,
                  mtime            = False,
                  onEntryAdded     = None,
@@ -442,6 +443,7 @@ class DirScanner(object):
         self.directory        = directory
         self.dryrun           = dryrun
         self.ignoreFiles      = ignoreFiles
+        self.maxSize          = maxSize
         self.minimalScan      = minimalScan
         self.mtime            = mtime
         self.onEntryAdded     = onEntryAdded
@@ -872,6 +874,7 @@ Where 'options' is one or more of:
     -n, --nothing         Don't make any changes to the directory or its state
     -v, --verbose         Show what's being done (or what would be done, if -n)
 
+    -M, --max-size=X      Keep the directory's total size beneath X
     -z, --minimal-scan    Only check directory if files have been added/removed
                            ^ This does not consider subdirectories!
 
@@ -1009,6 +1012,8 @@ def processOptions(argv):
             options['pruneDirs']       = True
         elif o in ('-z', '--minimal-scan'):
             options['minimalScan']     = True
+        elif o in ('-M', '--max-size'):
+            options['maxSize']         = long(a)
         elif o in ('-S', '--secure'):
             options['secure']          = True
         elif o in ('-T', '--securetag'):
