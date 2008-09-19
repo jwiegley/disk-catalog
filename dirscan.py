@@ -852,7 +852,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."""
 
 
 def usage():
-    print """Usage: cleanup [options]
+    print """Usage: dirscan.py [options]
 
 Where 'options' is one or more of:
     -h, --help            This help screen
