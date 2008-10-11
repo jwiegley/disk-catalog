@@ -12,6 +12,7 @@ import logging as l
 from copy import deepcopy
 from datetime import datetime
 from getopt import getopt, GetoptError
+from operator import attrgetter
 
 from stat import ST_ATIME, ST_MTIME, ST_MODE, ST_SIZE, S_ISDIR, S_ISREG
 from os.path import (join, expanduser, dirname, basename,
@@ -867,19 +868,17 @@ class DirScanner(object):
 
                 for size in sizes:
                     entries = size_map[size]
-
-                    oldest = None
+                    entries.sort(key = attrgetter('timestamp'))
                     for entry in entries:
-                        if oldest is None or \
-                           entry.timestamp < oldest.timestamp:
-                            oldest = entry
+                        l.info("Purging entry %s to reduce size (saves %ld)" %
+                               (entry.path, size))
 
-                    l.info("Purging entry %s to reduce size (saves %ld)" %
-                           (oldest.path, size))
+                        safeRemove(entry)
+                        total_size -= size
+                        self._dirty = True
 
-                    safeRemove(oldest)
-                    total_size -= size
-                    self._dirty = True
+                        if total_size <= self.maxSize:
+                            break
 
                     if total_size <= self.maxSize:
                         l.info("Directory is now within size limits (%ld <= %ld)" %
