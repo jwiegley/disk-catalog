@@ -13,7 +13,7 @@ from copy import deepcopy
 from datetime import datetime
 from getopt import getopt, GetoptError
 
-from stat import ST_ATIME, ST_MTIME, ST_MODE, S_ISDIR
+from stat import ST_ATIME, ST_MTIME, ST_MODE, ST_SIZE, S_ISDIR, S_ISREG
 from os.path import (join, expanduser, dirname, basename,
                      exists, lexists, isfile, isdir, islink)
 
@@ -90,6 +90,7 @@ class Entry(object):
     _stamp     = None
     _prevInfo  = None
     _info      = None
+    _dirSize   = None
 
     def __init__(self, theScanner, path):
         self._scanner = theScanner
@@ -127,20 +128,35 @@ class Entry(object):
     @property
     def lastAccessTime(self):
         # Clear the cached info, since it may have changed
-        self._info = None
+        if not self._scanner.cacheAttrs:
+            self._info = None
         return datetime.fromtimestamp(self.info[ST_ATIME])
 
     @property
     def lastModTime(self):
         # Clear the cached info, since it may have changed
-        self._info = None
+        if not self._scanner.cacheAttrs:
+            self._info = None
         return datetime.fromtimestamp(self.info[ST_MTIME])
 
     @property
-    def fileSize(self):
+    def size(self):
         # Clear the cached info, since it may have changed
-        self._info = None
-        return self.info[ST_SIZE]
+        if not self._scanner.cacheAttrs:
+            self._info    = None
+            self._dirSize = None
+
+        if self.isRegularFile():
+            return long(self.info[ST_SIZE])
+        elif self.isDirectory():
+            if not self._dirSize:
+                self._dirSize = 0L
+                for root, dirs, files in os.walk(self.path):
+                    for f in files:
+                        self._dirSize += long(os.lstat(join(root, f))[ST_SIZE])
+            return self._dirSize
+        else:
+            return 0L
 
     def contentsHaveChanged(self):
         if not self._prevInfo:
@@ -368,6 +384,7 @@ class DirScanner(object):
                  directory        = None,
                  ages             = False, # this is a very odd option
                  atime            = False,
+                 cacheAttrs       = False,
                  check            = False,
                  database         = '.files.dat',
                  days             = -1.0,
@@ -436,6 +453,7 @@ class DirScanner(object):
 
         self.ages             = ages
         self.atime            = atime
+        self.cacheAttrs       = cacheAttrs
         self.check            = check
         self.database         = database
         self.days             = days
@@ -443,7 +461,7 @@ class DirScanner(object):
         self.directory        = directory
         self.dryrun           = dryrun
         self.ignoreFiles      = ignoreFiles
-        self.maxSize          = maxSize
+        self.maxSize          = long(maxSize) if maxSize else None
         self.minimalScan      = minimalScan
         self.mtime            = mtime
         self.onEntryAdded     = onEntryAdded
@@ -623,13 +641,20 @@ class DirScanner(object):
                 assert isinstance(entry, Entry)
                 fun(entry)
 
-    def totalSize(self):
-        size = 0
+    def computeSizes(self):
+        size = 0L
+        size_map = {}
+
         for entry in self._entries.values():
             assert isinstance(entry, Entry)
-            if entry.isRegularFile():
-                size += entry.fileSize()
-        return size
+            entry_size = entry.size
+            size += entry_size
+            if size_map.has_key(entry_size):
+                size_map[entry_size].append(entry)
+            else:
+                size_map[entry_size] = [entry]
+
+        return (size, size_map)
 
     def _scanEntries(self, path, depth = 0):
         "This is the worker task for scanEntries, called for each directory."
@@ -782,8 +807,9 @@ class DirScanner(object):
             if self._dbMtime >= dirMtime:
                 scandir = False
 
-            l.info("Database mtime %s < directory %s, %s scan" %
-                   (self._dbMtime, dirMtime, scandir and "will" or "will not"))
+            l.info("Database mtime %s %s directory %s, %s scan" %
+                   (self._dbMtime, scandir and "<" or ">=", dirMtime,
+                    scandir and "will" or "will not"))
 
         # If the directory has not changed, we can simply scan the entries in
         # the database without having to refer to disk. Otherwise, either the
@@ -817,6 +843,51 @@ class DirScanner(object):
         if self._oldest < self.days:
             l.info("No files were beyond the age limit (oldest %.1fd < %.1fd)" %
                    (self._oldest, self.days))
+
+	# Compute the sizes of all files in the directory (if it has changed
+	# at all), to see if we're over the overall limit.  If so, first
+	# remove files that exceed the limit in and of themselves, and then
+	# proceed by using the largest, oldest first.
+
+        if self.maxSize and self._dirty:
+            total_size, size_map = self.computeSizes()
+            if total_size > self.maxSize:
+                l.info("Directory exceeds the maximum size (%ld > %ld)" %
+                       (total_size, self.maxSize))
+
+                sizes = size_map.keys()
+                sizes.sort()
+                sizes.reverse()
+
+                if size_map.has_key(0):
+                    l.info("Pruning %d empty entries" % len(size_map[0]))
+                    for entry in size_map[0]:
+                        safeRemove(entry)
+                        self._dirty = True
+
+                for size in sizes:
+                    entries = size_map[size]
+
+                    oldest = None
+                    for entry in entries:
+                        if oldest is None or \
+                           entry.timestamp < oldest.timestamp:
+                            oldest = entry
+
+                    l.info("Purging entry %s to reduce size (saves %ld)" %
+                           (oldest.path, size))
+
+                    safeRemove(oldest)
+                    total_size -= size
+                    self._dirty = True
+
+                    if total_size <= self.maxSize:
+                        l.info("Directory is now within size limits (%ld <= %ld)" %
+                               (total_size, self.maxSize))
+                        break
+            else:
+                l.info("Directory is within size limits (%ld <= %ld)" %
+                       (total_size, self.maxSize))
 
         # If any changes have been made to the state database, write those
         # changes out before exiting.
@@ -984,6 +1055,8 @@ def processOptions(argv):
             options['ages']            = True
         elif o in ('-a', '--atime'):
             options['atime']           = True
+        elif o in ('-C', '--cache-attrs'):
+            options['cacheAttrs']      = True
         elif o in ('-R', '--check'):
             options['check']           = True
             options['minimalScan']     = False
