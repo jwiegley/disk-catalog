@@ -36,13 +36,14 @@ def delfile(path):
         os.remove(path)
 
 def deltree(path):
-    if not lexists(path): return
-    for root, dirs, files in os.walk(path, topdown = False):
-        for f in files:
-            os.remove(join(root, f))
-        for d in dirs:
-            os.rmdir(join(root, d))
-    os.rmdir(path)
+    run('/bin/rm -fr', path)
+    #if not lexists(path): return
+    #for root, dirs, files in os.walk(path, topdown = False):
+    #    for f in files:
+    #        os.remove(join(root, f))
+    #    for d in dirs:
+    #        os.rmdir(join(root, d))
+    #os.rmdir(path)
 
 
 def run(cmd, path, dryrun = False):
