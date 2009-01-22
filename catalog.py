@@ -1382,10 +1382,8 @@ parser.add_option('-v', '--verbose',
 if opts.databaseName:
     from pyPgSQL import PgSQL
     import mx.DateTime
-    conn = PgSQL.connect(":%s:%s:%s:%s" % (opts.databasePort,
-                                           opts.databaseName,
-                                           opts.databaseUser,
-                                           opts.databasePass))
+    conn = PgSQL.connect(":%s:%s:%s:%s" % (opts.databasePort, opts.databaseName,
+                                           opts.databaseUser, opts.databasePass))
     if not conn:
         print "Could not connect to PostgreSQL database '%s' as '%s'" \
             % (opts.databaseName, opts.databaseUser)

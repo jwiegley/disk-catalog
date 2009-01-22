@@ -125,3 +125,4 @@ if not args or "downloads" in args:
                minimalScan      = True,
                onEntryPastLimit = handleDownload,
                **opts).scanEntries()
+
